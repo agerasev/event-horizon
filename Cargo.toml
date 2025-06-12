@@ -1,0 +1,8 @@
+[package]
+name = "event-horizon"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+winit = "0.30.11"
