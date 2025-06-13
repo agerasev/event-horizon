@@ -6,15 +6,15 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::app::{AppHandle, AppState};
+use crate::app::{AppProxy, AppState};
 
 pub struct Window {
     state: Rc<RefCell<AppState>>,
 }
 
 impl Window {
-    pub(crate) fn new(app: AppHandle) -> Self {
-        Self { state: app }
+    pub(crate) fn new(app: AppProxy) -> Self {
+        Self { state: app.state }
     }
 
     pub fn render(&mut self) -> RenderFuture<'_> {

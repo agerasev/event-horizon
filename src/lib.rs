@@ -1,3 +1,3 @@
 mod app;
-pub mod runtime;
+pub mod executor;
 pub mod window;

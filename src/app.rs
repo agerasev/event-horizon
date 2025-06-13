@@ -1,12 +1,16 @@
-use std::{cell::RefCell, ops::ControlFlow, rc::Rc};
+use std::{cell::RefCell, rc::Rc, task::Poll};
 
 use winit::{
     application::ApplicationHandler,
     error::EventLoopError,
     event::WindowEvent,
-    event_loop::{ActiveEventLoop, ControlFlow as EventLoopControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     window::{Window, WindowId},
 };
+
+use crate::executor::Executor;
+
+pub struct UserEvent {}
 
 #[derive(Default, Debug)]
 pub struct AppState {
@@ -14,16 +18,51 @@ pub struct AppState {
     pub close_requested: bool,
 }
 
-pub type AppHandle = Rc<RefCell<AppState>>;
-
-#[derive(Default)]
-pub struct App {
-    window: Option<Window>,
-    state: Rc<RefCell<AppState>>,
-    poll: Option<Box<dyn FnMut() -> ControlFlow<()>>>,
+#[derive(Clone)]
+pub struct AppProxy {
+    pub state: Rc<RefCell<AppState>>,
+    pub event_loop: EventLoopProxy<UserEvent>,
 }
 
-impl ApplicationHandler for App {
+pub struct App {
+    event_loop: EventLoop<UserEvent>,
+    state: Rc<RefCell<AppState>>,
+}
+
+struct AppRuntime {
+    window: Option<Window>,
+    state: Rc<RefCell<AppState>>,
+    executor: Executor,
+}
+
+impl App {
+    pub fn new() -> Self {
+        let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
+        Self {
+            event_loop,
+            state: Default::default(),
+        }
+    }
+
+    pub fn handle(&self) -> AppProxy {
+        AppProxy {
+            state: self.state.clone(),
+            event_loop: self.event_loop.create_proxy(),
+        }
+    }
+
+    pub fn run(self, executor: Executor) -> Result<(), EventLoopError> {
+        let mut app = AppRuntime {
+            window: None,
+            state: self.state,
+            executor,
+        };
+        self.event_loop.set_control_flow(ControlFlow::Poll);
+        self.event_loop.run_app(&mut app)
+    }
+}
+
+impl ApplicationHandler<UserEvent> for AppRuntime {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.window = Some(
             event_loop
@@ -47,27 +86,9 @@ impl ApplicationHandler for App {
         }
         drop(state);
 
-        if let Some(poll) = &mut self.poll {
-            match poll() {
-                ControlFlow::Continue(()) => (),
-                ControlFlow::Break(()) => event_loop.exit(),
-            }
+        match self.executor.poll() {
+            Poll::Pending => (),
+            Poll::Ready(()) => event_loop.exit(),
         }
-    }
-}
-
-impl App {
-    pub fn handle(&self) -> AppHandle {
-        self.state.clone()
-    }
-
-    pub fn run<F: FnMut() -> ControlFlow<()> + 'static>(
-        &mut self,
-        poll: F,
-    ) -> Result<(), EventLoopError> {
-        self.poll = Some(Box::new(poll));
-        let event_loop = EventLoop::new().unwrap();
-        event_loop.set_control_flow(EventLoopControlFlow::Poll);
-        event_loop.run_app(self)
     }
 }
