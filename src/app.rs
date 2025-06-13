@@ -91,4 +91,12 @@ impl ApplicationHandler<UserEvent> for AppRuntime {
             Poll::Ready(()) => event_loop.exit(),
         }
     }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: UserEvent) {
+        println!("User event");
+        match self.executor.poll() {
+            Poll::Pending => (),
+            Poll::Ready(()) => event_loop.exit(),
+        }
+    }
 }
