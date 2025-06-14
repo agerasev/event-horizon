@@ -1,10 +1,11 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Weak},
-    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+    sync::Arc,
+    task::{Context, Poll, Waker},
 };
 
+use futures::task::{ArcWake, waker};
 use winit::event_loop::EventLoopProxy;
 
 use crate::{
@@ -14,7 +15,6 @@ use crate::{
 
 struct Task {
     future: Pin<Box<dyn Future<Output = ()>>>,
-    _data: Arc<TaskData>,
     waker: Waker,
 }
 
@@ -22,9 +22,9 @@ struct TaskData {
     event_loop: EventLoopProxy<UserEvent>,
 }
 
-impl TaskData {
-    fn wake(&self) {
-        if self.event_loop.send_event(UserEvent {}).is_err() {
+impl ArcWake for TaskData {
+    fn wake_by_ref(arc_self: &Arc<Self>) {
+        if arc_self.event_loop.send_event(UserEvent {}).is_err() {
             panic!("Event loop closed");
         }
     }
@@ -36,36 +36,6 @@ impl Drop for TaskData {
     }
 }
 
-unsafe fn make_raw_waker(data: Weak<TaskData>) -> RawWaker {
-    unsafe fn clone_ptr(ptr: *const ()) -> RawWaker {
-        let data = unsafe { Weak::<TaskData>::from_raw(ptr.cast()) };
-        let cloned = unsafe { make_raw_waker(data.clone()) };
-        let _leak = data.into_raw();
-        cloned
-    }
-    unsafe fn wake_ptr(ptr: *const ()) {
-        let data = unsafe { Weak::<TaskData>::from_raw(ptr.cast()) };
-        if let Some(data) = data.upgrade() {
-            data.wake();
-        }
-    }
-    unsafe fn wake_ptr_by_ref(ptr: *const ()) {
-        let data = unsafe { Weak::<TaskData>::from_raw(ptr.cast()) };
-        if let Some(data) = data.upgrade() {
-            data.wake();
-        }
-        let _leak = data.into_raw();
-    }
-    unsafe fn drop_ptr(ptr: *const ()) {
-        drop(unsafe { Weak::<TaskData>::from_raw(ptr.cast()) });
-    }
-
-    const VTABLE: RawWakerVTable =
-        RawWakerVTable::new(clone_ptr, wake_ptr, wake_ptr_by_ref, drop_ptr);
-
-    RawWaker::new(data.into_raw().cast(), &VTABLE)
-}
-
 impl Task {
     fn new(app: &AppProxy, future: Pin<Box<dyn Future<Output = ()>>>) -> Self {
         let data = Arc::new(TaskData {
@@ -73,8 +43,7 @@ impl Task {
         });
         Self {
             future,
-            waker: unsafe { Waker::from_raw(make_raw_waker(Arc::downgrade(&data))) },
-            _data: data,
+            waker: waker(data),
         }
     }
 

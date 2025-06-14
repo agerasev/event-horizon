@@ -5,4 +5,5 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
+futures = { version = "0.3.31", default-features = false, features = ["alloc"] }
 winit = "0.30.11"
