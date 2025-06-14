@@ -123,15 +123,6 @@ impl Executor {
             Poll::Pending
         }
     }
-
-    pub fn poll_all(&mut self) -> Poll<()> {
-        self.tasks.retain(|_id, task| task.poll().is_pending());
-        if self.tasks.is_empty() {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
-    }
 }
 
 pub fn enter<F: AsyncFnOnce(Window) + 'static>(main: F) {

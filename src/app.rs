@@ -1,4 +1,8 @@
-use std::{cell::RefCell, mem, rc::Rc, task::Poll};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    task::{Poll, Waker},
+};
 
 use fxhash::FxHashSet as HashSet;
 use winit::{
@@ -18,6 +22,8 @@ pub struct UserEvent {
 
 #[derive(Default, Debug)]
 pub struct AppState {
+    pub window: Option<Window>,
+    pub redraw_waker: Option<Waker>,
     pub redraw_requested: bool,
     pub close_requested: bool,
 }
@@ -34,11 +40,9 @@ pub struct App {
 }
 
 struct AppRuntime {
-    window: Option<Window>,
     state: Rc<RefCell<AppState>>,
     executor: Executor,
     tasks_to_poll: HashSet<TaskId>,
-    poll_all: bool,
 }
 
 impl App {
@@ -59,11 +63,9 @@ impl App {
 
     pub fn run(self, executor: Executor) -> Result<(), EventLoopError> {
         let mut app = AppRuntime {
-            window: None,
             state: self.state,
             executor,
             tasks_to_poll: HashSet::default(),
-            poll_all: false,
         };
         self.event_loop.set_control_flow(ControlFlow::Wait);
         self.event_loop.run_app(&mut app)
@@ -72,7 +74,7 @@ impl App {
 
 impl ApplicationHandler<UserEvent> for AppRuntime {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        self.window = Some(
+        self.state.borrow_mut().window = Some(
             event_loop
                 .create_window(Window::default_attributes())
                 .unwrap(),
@@ -81,17 +83,20 @@ impl ApplicationHandler<UserEvent> for AppRuntime {
 
     fn window_event(&mut self, _event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let mut state = self.state.borrow_mut();
-        // TODO: Get id of task waiting for specific event
         match event {
             WindowEvent::CloseRequested => {
                 println!("Close requested");
                 state.close_requested = true;
-                self.poll_all = true;
+                if let Some(waker) = state.redraw_waker.take() {
+                    waker.wake()
+                }
             }
             WindowEvent::RedrawRequested => {
                 println!("Redraw requested");
                 state.redraw_requested = true;
-                self.poll_all = true;
+                if let Some(waker) = state.redraw_waker.take() {
+                    waker.wake()
+                }
             }
             _ => (),
         }
@@ -104,11 +109,7 @@ impl ApplicationHandler<UserEvent> for AppRuntime {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let poll = if mem::replace(&mut self.poll_all, false) {
-            self.executor.poll_all()
-        } else {
-            self.executor.poll(self.tasks_to_poll.iter().copied())
-        };
+        let poll = self.executor.poll(self.tasks_to_poll.iter().copied());
         self.tasks_to_poll.clear();
         match poll {
             Poll::Pending => (),

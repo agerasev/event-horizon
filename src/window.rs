@@ -17,7 +17,10 @@ impl Window {
         Self { state: app.state }
     }
 
-    pub fn render(&mut self) -> RenderFuture<'_> {
+    pub fn request_render(&mut self) -> RenderFuture<'_> {
+        if let Some(window) = self.state.borrow().window.as_ref() {
+            window.request_redraw();
+        }
         RenderFuture { state: &self.state }
     }
 
@@ -31,14 +34,18 @@ pub struct RenderFuture<'a> {
 }
 
 impl<'a> Future for RenderFuture<'a> {
-    type Output = ();
+    type Output = Option<()>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if mem::replace(&mut self.state.borrow_mut().redraw_requested, false)
-            || self.state.borrow().close_requested
-        {
-            Poll::Ready(())
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut state = self.state.borrow_mut();
+        if mem::replace(&mut state.redraw_requested, false) || state.close_requested {
+            Poll::Ready(if !state.close_requested {
+                Some(())
+            } else {
+                None
+            })
         } else {
+            state.redraw_waker = Some(cx.waker().clone());
             Poll::Pending
         }
     }

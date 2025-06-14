@@ -5,6 +5,6 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-futures = { version = "0.3.31", default-features = false, features = ["alloc"] }
+futures = { version = "0.3.31", default-features = false, features = ["std"] }
 fxhash = "0.2.1"
 winit = "0.30.11"

@@ -53,8 +53,7 @@ async fn main_(mut window: Window) {
     println!("Started");
     Loader::new(Duration::from_secs(1)).await;
     println!("Loaded");
-    while !window.is_closed() {
-        window.render().await;
+    while let Some(_render) = window.request_render().await {
         println!("Rendered");
     }
     println!("Closed");
