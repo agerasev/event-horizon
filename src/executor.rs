@@ -11,7 +11,7 @@ use std::{
 };
 
 use futures::task::{ArcWake, waker};
-use fxhash::FxHashMap as HashMap;
+use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 
 use crate::{
@@ -20,11 +20,13 @@ use crate::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
-pub struct TaskId(u32);
+pub struct TaskId(u64);
 
 impl TaskId {
-    fn inc(&mut self) -> TaskId {
-        Self(self.0.wrapping_add(1))
+    fn get_and_inc(&mut self) -> TaskId {
+        let id = *self;
+        self.0 = self.0.wrapping_add(1);
+        id
     }
 }
 
@@ -88,8 +90,16 @@ pub(crate) struct Timer {
 pub(crate) struct Executor {
     app: AppProxy,
     tasks: HashMap<TaskId, Task>,
-    task_counter: TaskId,
+    tasks_to_poll: HashSet<TaskId>,
     timers: BTreeMap<Instant, Rc<RefCell<Timer>>>,
+    proxy: Rc<RefCell<ExecutorProxy>>,
+}
+
+#[derive(Default)]
+pub(crate) struct ExecutorProxy {
+    task_counter: TaskId,
+    tasks: Vec<(TaskId, Pin<Box<dyn Future<Output = ()>>>)>,
+    timers: Vec<(Instant, Rc<RefCell<Timer>>)>,
 }
 
 impl Executor {
@@ -97,29 +107,29 @@ impl Executor {
         Self {
             app,
             tasks: HashMap::default(),
-            task_counter: TaskId(0),
+            tasks_to_poll: HashSet::default(),
             timers: BTreeMap::default(),
+            proxy: Rc::new(RefCell::new(ExecutorProxy::default())),
         }
     }
 
-    pub fn get_free_id(&mut self) -> TaskId {
-        while self.tasks.contains_key(&self.task_counter) {
-            self.task_counter.inc();
+    pub fn proxy(&self) -> Rc<RefCell<ExecutorProxy>> {
+        self.proxy.clone()
+    }
+
+    fn sync_proxy(&mut self) {
+        let mut proxy = self.proxy.borrow_mut();
+
+        for (id, future) in proxy.tasks.drain(..) {
+            let task = Task::new(id, &self.app, Box::pin(future));
+            assert!(self.tasks.insert(id, task).is_none());
+            self.tasks_to_poll.insert(id);
         }
-        let id = self.task_counter;
-        self.task_counter.inc();
-        id
-    }
 
-    pub fn spawn<F: Future<Output = ()> + 'static>(&mut self, future: F) -> TaskId {
-        let id = self.get_free_id();
-        let task = Task::new(id, &self.app, Box::pin(future));
-        assert!(self.tasks.insert(id, task).is_none());
-        id
-    }
-
-    pub fn add_timer(&mut self, timestamp: Instant) -> Rc<RefCell<Timer>> {
-        self.timers.entry(timestamp).or_default().clone()
+        for (timestamp, timer) in proxy.timers.drain(..) {
+            // FIXME: Allow duplicate timestamps
+            assert!(self.timers.insert(timestamp, timer).is_none());
+        }
     }
 
     fn wake_timers(&mut self) {
@@ -137,7 +147,9 @@ impl Executor {
         event_loop: &ActiveEventLoop,
         tasks: impl IntoIterator<Item = TaskId>,
     ) -> Poll<()> {
-        for id in tasks {
+        self.sync_proxy();
+
+        for id in tasks.into_iter().chain(self.tasks_to_poll.drain()) {
             if let Entry::Occupied(mut entry) = self.tasks.entry(id) {
                 if entry.get_mut().poll().is_ready() {
                     entry.remove();
@@ -160,14 +172,30 @@ impl Executor {
     }
 }
 
+impl ExecutorProxy {
+    pub fn spawn<F: Future<Output = ()> + 'static>(&mut self, future: F) -> TaskId {
+        let id = self.task_counter.get_and_inc();
+        let future = Box::pin(future);
+        self.tasks.push((id, future));
+        id
+    }
+
+    pub fn add_timer(&mut self, timestamp: Instant) -> Rc<RefCell<Timer>> {
+        let timer = Rc::new(RefCell::new(Timer::default()));
+        self.timers.push((timestamp, timer.clone()));
+        timer
+    }
+}
+
 pub fn enter<F: AsyncFnOnce(Runtime) + 'static>(main: F) {
     let app = App::new();
 
     let executor = Rc::new(RefCell::new(Executor::new(app.proxy())));
+    let proxy = executor.borrow().proxy();
 
-    let runtime = Runtime::new(executor.clone(), app.proxy());
+    let runtime = Runtime::new(proxy.clone(), app.proxy());
 
-    executor.borrow_mut().spawn(main(runtime));
+    proxy.borrow_mut().spawn(main(runtime));
 
     app.run(executor).unwrap();
 }

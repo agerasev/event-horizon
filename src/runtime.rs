@@ -9,18 +9,18 @@ use std::{
 
 use crate::{
     app::{AppProxy, AppState},
-    executor::{Executor, Timer},
+    executor::{ExecutorProxy, Timer},
 };
 
 /// Handle to underlying async runtime.
 #[derive(Clone)]
 pub struct Runtime {
-    executor: Rc<RefCell<Executor>>,
+    executor: Rc<RefCell<ExecutorProxy>>,
     state: Rc<RefCell<AppState>>,
 }
 
 impl Runtime {
-    pub(crate) fn new(executor: Rc<RefCell<Executor>>, app: AppProxy) -> Self {
+    pub(crate) fn new(executor: Rc<RefCell<ExecutorProxy>>, app: AppProxy) -> Self {
         Self {
             executor,
             state: app.state,
@@ -40,12 +40,10 @@ impl Runtime {
 
     // TODO: Return JoinHandle
     pub fn spawn<F: Future<Output = ()> + 'static>(&self, future: F) {
-        // FIXME: This code panics, use ExecutorProxy instead
         self.executor.borrow_mut().spawn(future);
     }
 
     pub fn sleep(&self, timeout: Duration) -> SleepFuture {
-        // FIXME: This code panics, use ExecutorProxy instead
         let timestamp = Instant::now().checked_add(timeout).unwrap();
         let timer = self.executor.borrow_mut().add_timer(timestamp);
         SleepFuture { timestamp, timer }
