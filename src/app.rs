@@ -1,5 +1,6 @@
-use std::{cell::RefCell, rc::Rc, task::Poll};
+use std::{cell::RefCell, mem, rc::Rc, task::Poll};
 
+use fxhash::FxHashSet as HashSet;
 use winit::{
     application::ApplicationHandler,
     error::EventLoopError,
@@ -8,9 +9,12 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::executor::Executor;
+use crate::executor::{Executor, TaskId};
 
-pub struct UserEvent {}
+#[derive(Debug)]
+pub struct UserEvent {
+    pub task_id: TaskId,
+}
 
 #[derive(Default, Debug)]
 pub struct AppState {
@@ -33,6 +37,8 @@ struct AppRuntime {
     window: Option<Window>,
     state: Rc<RefCell<AppState>>,
     executor: Executor,
+    tasks_to_poll: HashSet<TaskId>,
+    poll_all: bool,
 }
 
 impl App {
@@ -56,8 +62,10 @@ impl App {
             window: None,
             state: self.state,
             executor,
+            tasks_to_poll: HashSet::default(),
+            poll_all: false,
         };
-        self.event_loop.set_control_flow(ControlFlow::Poll);
+        self.event_loop.set_control_flow(ControlFlow::Wait);
         self.event_loop.run_app(&mut app)
     }
 }
@@ -71,30 +79,38 @@ impl ApplicationHandler<UserEvent> for AppRuntime {
         );
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, _event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let mut state = self.state.borrow_mut();
+        // TODO: Get id of task waiting for specific event
         match event {
             WindowEvent::CloseRequested => {
                 println!("Close requested");
                 state.close_requested = true;
+                self.poll_all = true;
             }
             WindowEvent::RedrawRequested => {
                 println!("Redraw requested");
                 state.redraw_requested = true;
+                self.poll_all = true;
             }
             _ => (),
         }
         drop(state);
-
-        match self.executor.poll() {
-            Poll::Pending => (),
-            Poll::Ready(()) => event_loop.exit(),
-        }
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: UserEvent) {
-        println!("User event");
-        match self.executor.poll() {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+        println!("User event: {event:?}");
+        self.tasks_to_poll.insert(event.task_id);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let poll = if mem::replace(&mut self.poll_all, false) {
+            self.executor.poll_all()
+        } else {
+            self.executor.poll(self.tasks_to_poll.iter().copied())
+        };
+        self.tasks_to_poll.clear();
+        match poll {
             Poll::Pending => (),
             Poll::Ready(()) => event_loop.exit(),
         }

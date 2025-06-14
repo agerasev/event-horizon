@@ -53,7 +53,7 @@ async fn main_(mut window: Window) {
     println!("Started");
     Loader::new(Duration::from_secs(1)).await;
     println!("Loaded");
-    while !window.closed() {
+    while !window.is_closed() {
         window.render().await;
         println!("Rendered");
     }

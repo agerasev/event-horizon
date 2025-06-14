@@ -21,7 +21,7 @@ impl Window {
         RenderFuture { state: &self.state }
     }
 
-    pub fn closed(&self) -> bool {
+    pub fn is_closed(&self) -> bool {
         self.state.borrow().close_requested
     }
 }

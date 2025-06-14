@@ -6,4 +6,5 @@ license = "MIT"
 
 [dependencies]
 futures = { version = "0.3.31", default-features = false, features = ["alloc"] }
+fxhash = "0.2.1"
 winit = "0.30.11"
