@@ -1,21 +1,25 @@
 use std::{
-    collections::hash_map::Entry,
+    cell::RefCell,
+    collections::{BTreeMap, hash_map::Entry},
     future::Future,
+    mem,
     pin::Pin,
+    rc::Rc,
     sync::Arc,
     task::{Context, Poll, Waker},
+    time::Instant,
 };
 
 use futures::task::{ArcWake, waker};
 use fxhash::FxHashMap as HashMap;
-use winit::event_loop::EventLoopProxy;
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 
 use crate::{
     app::{App, AppProxy, UserEvent},
-    window::Window,
+    runtime::Runtime,
 };
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
 pub struct TaskId(u32);
 
 impl TaskId {
@@ -76,10 +80,16 @@ impl Task {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct Timer {
+    pub waker: Option<Waker>,
+}
+
 pub(crate) struct Executor {
     app: AppProxy,
     tasks: HashMap<TaskId, Task>,
     task_counter: TaskId,
+    timers: BTreeMap<Instant, Rc<RefCell<Timer>>>,
 }
 
 impl Executor {
@@ -88,6 +98,7 @@ impl Executor {
             app,
             tasks: HashMap::default(),
             task_counter: TaskId(0),
+            timers: BTreeMap::default(),
         }
     }
 
@@ -106,10 +117,26 @@ impl Executor {
         assert!(self.tasks.insert(id, task).is_none());
         id
     }
-}
 
-impl Executor {
-    pub fn poll(&mut self, tasks: impl IntoIterator<Item = TaskId>) -> Poll<()> {
+    pub fn add_timer(&mut self, timestamp: Instant) -> Rc<RefCell<Timer>> {
+        self.timers.entry(timestamp).or_default().clone()
+    }
+
+    fn wake_timers(&mut self) {
+        let mut old_timers = self.timers.split_off(&Instant::now());
+        mem::swap(&mut self.timers, &mut old_timers);
+        for timer in old_timers.into_values() {
+            if let Some(waker) = timer.borrow_mut().waker.take() {
+                waker.wake();
+            }
+        }
+    }
+
+    pub fn poll(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        tasks: impl IntoIterator<Item = TaskId>,
+    ) -> Poll<()> {
         for id in tasks {
             if let Entry::Occupied(mut entry) = self.tasks.entry(id) {
                 if entry.get_mut().poll().is_ready() {
@@ -117,6 +144,14 @@ impl Executor {
                 }
             }
         }
+
+        self.wake_timers();
+        if let Some(entry) = self.timers.first_entry() {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(*entry.key()))
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
+        }
+
         if self.tasks.is_empty() {
             Poll::Ready(())
         } else {
@@ -125,14 +160,14 @@ impl Executor {
     }
 }
 
-pub fn enter<F: AsyncFnOnce(Window) + 'static>(main: F) {
+pub fn enter<F: AsyncFnOnce(Runtime) + 'static>(main: F) {
     let app = App::new();
-    let window = Window::new(app.handle());
 
-    let mut executor = Executor::new(app.handle());
-    let task_id = executor.spawn(main(window));
+    let executor = Rc::new(RefCell::new(Executor::new(app.proxy())));
 
-    if executor.poll([task_id]).is_pending() {
-        app.run(executor).unwrap();
-    }
+    let runtime = Runtime::new(executor.clone(), app.proxy());
+
+    executor.borrow_mut().spawn(main(runtime));
+
+    app.run(executor).unwrap();
 }

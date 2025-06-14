@@ -8,7 +8,7 @@ use fxhash::FxHashSet as HashSet;
 use winit::{
     application::ApplicationHandler,
     error::EventLoopError,
-    event::WindowEvent,
+    event::{StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     window::{Window, WindowId},
 };
@@ -41,7 +41,7 @@ pub struct App {
 
 struct AppRuntime {
     state: Rc<RefCell<AppState>>,
-    executor: Executor,
+    executor: Rc<RefCell<Executor>>,
     tasks_to_poll: HashSet<TaskId>,
 }
 
@@ -54,14 +54,14 @@ impl App {
         }
     }
 
-    pub fn handle(&self) -> AppProxy {
+    pub fn proxy(&self) -> AppProxy {
         AppProxy {
             state: self.state.clone(),
             event_loop: self.event_loop.create_proxy(),
         }
     }
 
-    pub fn run(self, executor: Executor) -> Result<(), EventLoopError> {
+    pub fn run(self, executor: Rc<RefCell<Executor>>) -> Result<(), EventLoopError> {
         let mut app = AppRuntime {
             state: self.state,
             executor,
@@ -79,6 +79,19 @@ impl ApplicationHandler<UserEvent> for AppRuntime {
                 .create_window(Window::default_attributes())
                 .unwrap(),
         );
+    }
+
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        if let StartCause::Init = cause {
+            match self
+                .executor
+                .borrow_mut()
+                .poll(event_loop, [TaskId::default()])
+            {
+                Poll::Pending => (),
+                Poll::Ready(()) => event_loop.exit(),
+            }
+        }
     }
 
     fn window_event(&mut self, _event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -109,7 +122,10 @@ impl ApplicationHandler<UserEvent> for AppRuntime {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let poll = self.executor.poll(self.tasks_to_poll.iter().copied());
+        let poll = self
+            .executor
+            .borrow_mut()
+            .poll(event_loop, self.tasks_to_poll.iter().copied());
         self.tasks_to_poll.clear();
         match poll {
             Poll::Pending => (),
